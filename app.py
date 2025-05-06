@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
 app = Flask(__name__)
 
 # Токен твоего бота
-TOKEN = 'YOUR_BOT_TOKEN'  # Замените на реальный токен вашего бота
+TOKEN = '7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Твой токен
 
 # Устанавливаем логирование
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -33,7 +33,7 @@ def webhook():
 
 # Устанавливаем вебхук на Telegram API
 def set_webhook():
-    url = 'https://<your_vercel_url>/' + TOKEN  # Замените на реальный URL на Vercel
+    url = 'https://postbot228-pujcv9z98-denislayz-gmailcoms-projects.vercel.app/' + TOKEN  # Твой URL на Vercel
     application.bot.set_webhook(url)
 
 # Включаем вебхук при старте приложения
