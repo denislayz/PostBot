@@ -1,44 +1,42 @@
 import logging
-import os
-from fastapi import FastAPI, Request
+from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, Dispatcher
-from telegram.ext import ContextTypes
-from telegram import Bot
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
 
-# Инициализация FastAPI
-app = FastAPI()
+# Инициализация Flask приложения
+app = Flask(__name__)
 
-# Получение токена бота и URL вебхука из переменных окружения
-TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+# Токен твоего бота
+TOKEN = 'YOUR_BOT_TOKEN'  # Замените на реальный токен вашего бота
 
-# Создание экземпляра бота
-bot = Bot(TOKEN)
-
-# Логирование для отслеживания ошибок
-logging.basicConfig(level=logging.INFO)
+# Устанавливаем логирование
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Устанавливаем вебхук для бота
-bot.set_webhook(url=WEBHOOK_URL)
+# Создаем приложение Telegram с помощью ApplicationBuilder
+application = ApplicationBuilder().token(TOKEN).build()
 
-# Обработчик команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я ваш бот, как могу помочь?")
+# Функция для обработки команды /start
+async def start(update: Update, context: CallbackContext):
+    await update.message.reply_text("Привет, я бот!")
 
-# Обработчик вебхука Telegram
-@app.post("/")
-async def telegram_webhook(req: Request):
-    # Получаем данные от Telegram
-    data = await req.json()
-    logging.info(f"Received update: {data}")
+# Устанавливаем обработчик команды /start
+application.add_handler(CommandHandler("start", start))
 
-    # Обрабатываем данные с помощью библиотеки python-telegram-bot
-    update = Update.de_json(data, bot)
-    dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.process_update(update)
+# Вебхук
+@app.route('/' + TOKEN, methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(), application.bot)
+    application.process_update(update)
+    return 'OK', 200
 
-    return {"status": "ok"}
+# Устанавливаем вебхук на Telegram API
+def set_webhook():
+    url = 'https://<your_vercel_url>/' + TOKEN  # Замените на реальный URL на Vercel
+    application.bot.set_webhook(url)
 
+# Включаем вебхук при старте приложения
+if __name__ == '__main__':
+    set_webhook()
+    app.run(port=5000)
