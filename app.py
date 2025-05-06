@@ -1,42 +1,40 @@
-import logging
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, CallbackContext
+from telegram.ext import Application, CommandHandler
+import requests
 
-# Инициализация Flask приложения
 app = Flask(__name__)
 
-# Токен твоего бота
-TOKEN = '7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Твой токен
+TOKEN = '7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Ваш токен бота
+WEBHOOK_URL = 'https://postbot228-a2a6cog9r-denislayz-gmailcoms-projects.vercel.app/7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Ваш URL с верселя
 
-# Устанавливаем логирование
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    level=logging.INFO)
-logger = logging.getLogger(__name__)
+# Создаем приложение для бота
+application = Application.builder().token(TOKEN).build()
 
-# Создаем приложение Telegram с помощью ApplicationBuilder
-application = ApplicationBuilder().token(TOKEN).build()
+# Команда для старта
+async def start(update: Update, context):
+    await update.message.reply_text('Привет! Я твой бот.')
 
-# Функция для обработки команды /start
-async def start(update: Update, context: CallbackContext):
-    await update.message.reply_text("Привет, я бот!")
+# Регистрируем команду /start
+application.add_handler(CommandHandler('start', start))
 
-# Устанавливаем обработчик команды /start
-application.add_handler(CommandHandler("start", start))
-
-# Вебхук
-@app.route('/' + TOKEN, methods=['POST'])
+@app.route(f'/{TOKEN}', methods=['POST'])  # Настройка маршрута для вебхука
 def webhook():
-    update = Update.de_json(request.get_json(), application.bot)
-    application.process_update(update)
-    return 'OK', 200
+    try:
+        # Получаем обновление от Telegram
+        update = Update.de_json(request.get_json(), application.bot)
+        application.process_update(update)
+        return 'OK', 200
+    except Exception as e:
+        print(f"Error: {e}")
+        return 'Internal Server Error', 500
 
-# Устанавливаем вебхук на Telegram API
-def set_webhook():
-    url = 'https://postbot228-pujcv9z98-denislayz-gmailcoms-projects.vercel.app/7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Твой URL на Vercel
-    application.bot.set_webhook(url)
 
-# Включаем вебхук при старте приложения
 if __name__ == '__main__':
-    set_webhook()
-    app.run(port=5000)
+    # Устанавливаем вебхук для Telegram
+    webhook_set_url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}"
+    response = requests.get(webhook_set_url)
+    print(f"Webhook response: {response.text}")
+
+    # Запускаем Flask сервер
+    app.run(debug=True, host='0.0.0.0', port=8080)
