@@ -33,7 +33,7 @@ def webhook():
 
 # Устанавливаем вебхук на Telegram API
 def set_webhook():
-    url = 'https://postbot228-pujcv9z98-denislayz-gmailcoms-projects.vercel.app/' + TOKEN  # Твой URL на Vercel
+    url = 'https://postbot228-pujcv9z98-denislayz-gmailcoms-projects.vercel.app/7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'  # Твой URL на Vercel
     application.bot.set_webhook(url)
 
 # Включаем вебхук при старте приложения
