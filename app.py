@@ -1,20 +1,30 @@
-from fastapi import FastAPI
-from fastapi.responses import HTMLResponse
+from fastapi import FastAPI, Request
+from telegram import Update, Bot
+from telegram.ext import Dispatcher, CommandHandler, ContextTypes
+import os
+import logging
 
-# Создаем FastAPI-приложение
+TOKEN = os.getenv("BOT_TOKEN")  # Токен бота берём из переменной окружения
+
+bot = Bot(token=TOKEN)
 app = FastAPI()
 
-# Простой маршрут для проверки, что приложение работает
-@app.get("/", response_class=HTMLResponse)
-async def read_root():
-    return """
-    <html>
-        <head>
-            <title>Telegram Bot Hosting</title>
-        </head>
-        <body>
-            <h1>Привет! Бот успешно работает на Vercel.</h1>
-            <p>Здесь можно разместить документацию или интерфейс.</p>
-        </body>
-    </html>
-    """
+# Включаем логирование
+logging.basicConfig(level=logging.INFO)
+
+# Обработка команды /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Бот подключен через webhook и работает на Vercel.")
+
+@app.post("/")
+async def telegram_webhook(req: Request):
+    data = await req.json()
+    update = Update.de_json(data, bot)
+    dispatcher = Dispatcher(bot, None, workers=0, use_context=True)
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.process_update(update)
+    return {"status": "ok"}
+
+@app.get("/")
+async def root():
+    return {"message": "Привет! Бот успешно работает на Vercel."}
