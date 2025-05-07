@@ -6,7 +6,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 app = Flask(__name__)
 
 TOKEN = "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
-WEBHOOK_URL = "https://postbot228-9j2wgker5-denislayz-gmailcoms-projects.vercel.app/webhook"
+WEBHOOK_URL = "https://postbot228.vercel.app/webhook"
 
 bot = Bot(token=TOKEN)
 application = Application.builder().token(TOKEN).build()
