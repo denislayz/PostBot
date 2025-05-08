@@ -6,7 +6,7 @@ import os
 
 # Настройки
 TOKEN = os.getenv('7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY')  # Токен Telegram-бота
-WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # URL для вебхука
+WEBHOOK_URL = os.getenv('postbot-production.up.railway.app')  # URL для вебхука
 
 # Инициализация Flask-приложения
 app = Flask(__name__)
