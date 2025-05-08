@@ -1,44 +1,35 @@
-import logging
-from flask import Flask, request
-from telegram import Bot
-from telegram.ext import Dispatcher, CommandHandler
 import os
+from telegram import Update
+from telegram.ext import Updater, CommandHandler, CallbackContext, Application
 
-# Настройки
-TOKEN = os.getenv('7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY')  # Токен Telegram-бота
-WEBHOOK_URL = os.getenv('postbot-production.up.railway.app')  # URL для вебхука
+# Replace with your bot's token
+TOKEN = '7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'
 
-# Инициализация Flask-приложения
-app = Flask(__name__)
+# Webhook URL for Telegram (this should be your deployed Railway URL)
+WEBHOOK_URL = 'https://postbot-production.up.railway.app/webhook'
 
-# Инициализация бота
-bot = Bot(TOKEN)
+# Start command function
+async def start(update: Update, context: CallbackContext) -> None:
+    await update.message.reply_text('Hello, I am your bot!')
 
-# Функция обработки команды /start
-def start(update, context):
-    update.message.reply_text('Привет! Я твой бот. Напиши /help для получения справки.')
+# Function to set webhook
+def set_webhook(application: Application):
+    """Sets the webhook to the Telegram Bot API."""
+    application.bot.set_webhook(WEBHOOK_URL)
 
-# Создаем диспетчер для обработки сообщений
-dispatcher = Dispatcher(bot, None, workers=0)
-dispatcher.add_handler(CommandHandler("start", start))
+def main():
+    """Start the bot with a webhook and the /start command handler."""
+    # Initialize the bot application with your bot token
+    application = Application.builder().token(TOKEN).build()
 
-# Настройка вебхука для получения данных
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    json_str = request.get_data().decode('UTF-8')
-    update = bot.get_updates(json_str)
-    dispatcher.process_update(update)
-    return "ok", 200
+    # Register /start command handler
+    application.add_handler(CommandHandler("start", start))
 
-# Установка вебхука на сервер Telegram
-def set_webhook():
-    bot.set_webhook(WEBHOOK_URL + '/webhook')
+    # Set the webhook URL
+    set_webhook(application)
 
-# Запуск сервера Flask
+    # Start polling (this is useful if you want to run both webhook and polling, but we'll rely on webhook here)
+    application.run_polling()
+
 if __name__ == '__main__':
-    set_webhook()  # Устанавливаем вебхук при запуске
-    import os
-
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-
+    main()
