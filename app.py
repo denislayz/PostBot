@@ -1,41 +1,36 @@
 from flask import Flask, request
+import json
 import requests
-from telegram import Update, Bot
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram import Update
+from telegram.ext import ApplicationBuilder
+import asyncio
 
 app = Flask(__name__)
 
+# Токен вашего бота
 TOKEN = "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
 WEBHOOK_URL = "https://postbot228.vercel.app/webhook"
 
-bot = Bot(token=TOKEN)
-application = Application.builder().token(TOKEN).build()
+# Инициализация асинхронного бота
+application = ApplicationBuilder().token(TOKEN).build()
 
-# Обработчик команды /start
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Бот работает!")
-
-# Регистрируем обработчик
-application.add_handler(CommandHandler("start", start))
-
-# Устанавливаем вебхук перед первым запросом
-@app.before_first_request
+# Устанавливаем вебхук
 def set_webhook():
     url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}"
-    r = requests.get(url)
-    print("Webhook status:", r.json())
+    response = requests.get(url)
+    print(response.json())
 
-# Обработка входящих запросов от Telegram
-@app.route('/webhook', methods=['POST'])
+@app.route("/webhook", methods=["POST"])
 async def webhook():
-    update = Update.de_json(request.get_json(force=True), bot)
+    json_str = request.get_data().decode("UTF-8")
+    update = Update.de_json(json.loads(json_str), application)
     await application.process_update(update)
-    return 'ok'
+    return "OK", 200
 
-# Проверка работы сервера
 @app.route('/')
 def home():
-    return 'Бот работает!'
+    return "Бот работает!"
 
-if __name__ == '__main__':
-    app.run()
+if __name__ == "__main__":
+    set_webhook()
+    app.run(debug=True, host='0.0.0.0', port=5000)
