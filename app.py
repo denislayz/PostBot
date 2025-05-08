@@ -1,37 +1,44 @@
 from flask import Flask, request
 import json
+import requests
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, ContextTypes
-)
-import asyncio
+from telegram.ext import ApplicationBuilder
 
 app = Flask(__name__)
 
-# === НАСТРОЙКИ ===
+# Токен вашего бота
 TOKEN = "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
+WEBHOOK_URL = "https://postbot228.vercel.app/webhook"
+
+# Инициализация бота
 application = ApplicationBuilder().token(TOKEN).build()
 
-# === ОБРАБОТЧИКИ ===
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я работаю через вебхук!")
+# Устанавливаем вебхук
+def set_webhook():
+    url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}"
+    response = requests.get(url)
+    print(f"Webhook setup response: {response.json()}")  # Добавим больше информации
 
-application.add_handler(CommandHandler("start", start))
+# Этот маршрут будет обрабатывать запросы от Telegram
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    try:
+        # Логируем данные, чтобы понимать, что приходит в запросе
+        print("Received data:", request.get_data().decode("UTF-8"))
+        
+        json_str = request.get_data().decode("UTF-8")
+        update = Update.de_json(json.loads(json_str), application)
+        application.process_update(update)
+        return "OK", 200
+    except Exception as e:
+        print(f"Error processing update: {e}")
+        return "Internal Server Error", 500
 
-# === ГЛАВНАЯ СТРАНИЦА ===
+# Главная страница
 @app.route('/')
 def home():
     return "Бот работает!"
 
-# === ВЕБХУК ===
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    try:
-        data = request.get_data().decode('utf-8')
-        update = Update.de_json(json.loads(data), application)
-        await application.initialize()
-        await application.process_update(update)
-        return "OK"
-    except Exception as e:
-        print("Ошибка при обработке обновления:", e)
-        return "Ошибка", 500
+if __name__ == "__main__":
+    set_webhook()  # Устанавливаем вебхук
+    app.run(debug=True, host='0.0.0.0', port=5000)  # Запускаем Flask сервер
