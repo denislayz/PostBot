@@ -1,31 +1,40 @@
+import logging
 from flask import Flask, request
-import requests
+from telegram import Bot
+from telegram.ext import Dispatcher, CommandHandler
+import os
 
+# Настройки
+TOKEN = os.getenv('7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY')  # Токен Telegram-бота
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # URL для вебхука
+
+# Инициализация Flask-приложения
 app = Flask(__name__)
 
-TELEGRAM_TOKEN = "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
-WEBHOOK_URL = "https://your-render-url.onrender.com"
+# Инициализация бота
+bot = Bot(TOKEN)
 
-def set_webhook():
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook"
-    data = {"url": WEBHOOK_URL}
-    response = requests.post(url, data=data)
-    print("Webhook setup:", response.text)
+# Функция обработки команды /start
+def start(update, context):
+    update.message.reply_text('Привет! Я твой бот. Напиши /help для получения справки.')
 
-@app.route("/", methods=["POST"])
+# Создаем диспетчер для обработки сообщений
+dispatcher = Dispatcher(bot, None, workers=0)
+dispatcher.add_handler(CommandHandler("start", start))
+
+# Настройка вебхука для получения данных
+@app.route('/webhook', methods=['POST'])
 def webhook():
-    data = request.get_json()
-    if "message" in data:
-        chat_id = data["message"]["chat"]["id"]
-        text = data["message"].get("text", "")
-        send_message(chat_id, f"Ты написал: {text}")
-    return "OK"
+    json_str = request.get_data().decode('UTF-8')
+    update = bot.get_updates(json_str)
+    dispatcher.process_update(update)
+    return "ok", 200
 
-def send_message(chat_id, text):
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    data = {"chat_id": chat_id, "text": text}
-    requests.post(url, data=data)
+# Установка вебхука на сервер Telegram
+def set_webhook():
+    bot.set_webhook(WEBHOOK_URL + '/webhook')
 
-if __name__ == "__main__":
-    set_webhook()
-    app.run(host="0.0.0.0", port=10000)
+# Запуск сервера Flask
+if __name__ == '__main__':
+    set_webhook()  # Устанавливаем вебхук при запуске
+    app.run(debug=True, host='0.0.0.0', port=5000)
