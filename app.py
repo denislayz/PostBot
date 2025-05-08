@@ -17,21 +17,23 @@ application = ApplicationBuilder().token(TOKEN).build()
 def set_webhook():
     url = f"https://api.telegram.org/bot{TOKEN}/setWebhook?url={WEBHOOK_URL}"
     response = requests.get(url)
-    print(f"Webhook setup response: {response.json()}")  # Добавим больше информации
+    print(response.json())  # Посмотрим, что вернёт Telegram
 
 # Этот маршрут будет обрабатывать запросы от Telegram
 @app.route("/webhook", methods=["POST"])
 def webhook():
     try:
-        # Логируем данные, чтобы понимать, что приходит в запросе
-        print("Received data:", request.get_data().decode("UTF-8"))
-        
         json_str = request.get_data().decode("UTF-8")
+        print(f"Received webhook data: {json_str}")  # Логируем полученные данные
+
         update = Update.de_json(json.loads(json_str), application)
         application.process_update(update)
+
+        print("Update processed successfully.")  # Логируем успешную обработку
+
         return "OK", 200
     except Exception as e:
-        print(f"Error processing update: {e}")
+        print(f"Error processing webhook: {e}")  # Логируем ошибку
         return "Internal Server Error", 500
 
 # Главная страница
