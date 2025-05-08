@@ -1,23 +1,5 @@
-# Byte-compiled / cached / virtual env files
+*.pyc
 __pycache__/
-*.py[cod]
-*.so
-*.egg
-*.egg-info/
-dist/
-build/
-.eggs/
-.env
-.venv
-venv/
-ENV/
-env/
+*.log
 *.env
-
-# VSCode/IDE config files
-.vscode/
-.idea/
-
-# OS/system files
-.DS_Store
-Thumbs.db
+*.DS_Store
