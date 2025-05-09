@@ -5,7 +5,7 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
-    MessageEntity
+    InputMediaPhoto
 )
 from telegram.ext import (
     Application,
@@ -50,7 +50,8 @@ def get_user_state(uid):
             "selected_group": None,
             "selected_topic": None,
             "reactions": {},
-            "button_type": None
+            "button_type": None,
+            "users_reacted": set()
         }
     )
 
@@ -64,98 +65,154 @@ def reset_state_but_keep(uid):
         "selected_group": None,
         "selected_topic": None,
         "reactions": {},
-        "button_type": None
+        "button_type": None,
+        "users_reacted": set()
     }
 
-# ========== Хендлеры ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = str(user.id)
-    data[uid] = reset_state_but_keep(uid)
-    save_data()
+# ========== Хендлеры ========== (пример с минимальным button_handler)
 
-    text = "Добро пожаловать! Отправьте сообщение в группу, где упомянете бота. Он запомнит её."
-    kb = [[InlineKeyboardButton("🏠 Начать", callback_data="restart")]]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    data[str(uid)] = reset_state_but_keep(uid)
+    save_data()
+    kb = [[InlineKeyboardButton("Добавить группу", callback_data="add_group")]]
+    await update.message.reply_text("Привет! Выберите группу:", reply_markup=InlineKeyboardMarkup(kb))
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    uid = str(query.from_user.id)
+    uid = query.from_user.id
     st = get_user_state(uid)
+    cb = query.data
 
-    if query.data == "restart":
-        data[uid] = reset_state_but_keep(uid)
+    if cb == "add_group":
+        st["state"] = "await_group"
         save_data()
-        text = "Добро пожаловать! Отправьте сообщение в группу, где упомянете бота. Он запомнит её."
-        kb = [[InlineKeyboardButton("🏠 Начать", callback_data="restart")]]
-        return await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kb))
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    if not msg:
+        await query.message.reply_text("Пришлите ссылку на группу или перешлите сообщение из неё.")
         return
 
-    user = msg.from_user
-    uid = str(user.id)
+    if cb == "btn_react":
+        st["state"] = "post_react_1"
+        st["button_type"] = "react"
+        save_data()
+        await query.message.reply_text("Пришлите эмоджи для первой реакции")
+        return
+
+    if cb == "btn_link":
+        st["state"] = "post_link"
+        st["button_type"] = "link"
+        save_data()
+        await query.message.reply_text("Пришлите текст и ссылку в формате 'Текст, URL'")
+        return
+
+    if cb == "skip_buttons":
+        st["state"] = "confirm"
+        st["button_type"] = None
+        save_data()
+        kb = [
+            [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
+            [InlineKeyboardButton("📨 Отправить", callback_data="send")],
+            [InlineKeyboardButton("🏠 Начать", callback_data="restart")]
+        ]
+        await query.message.reply_text("Кнопки пропущены. Готово к отправке:", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    # реакция кнопка 2
+    if st["state"] == "post_react_2" and cb == "continue_react":
+        st["state"] = "confirm"
+        save_data()
+        kb = [
+            [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
+            [InlineKeyboardButton("📨 Отправить", callback_data="send")],
+            [InlineKeyboardButton("🏠 Начать", callback_data="restart")]
+        ]
+        await query.message.reply_text("Реакции добавлены.", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
     st = get_user_state(uid)
 
-    # ========== Обработка сообщения из группы с упоминанием бота ==========
-    if msg.chat.type in ["group", "supergroup"] and msg.entities:
-        for ent in msg.entities:
-            if ent.type == MessageEntity.MENTION:
-                mention = msg.text[ent.offset:ent.offset + ent.length]
-                if mention == f"@{context.bot.username}":
-                    st["groups"][str(msg.chat.id)] = msg.chat.title or msg.chat.username or str(msg.chat.id)
-                    st["selected_group"] = str(msg.chat.id)
-                    st["state"] = "awaiting_topic"
-                    save_data()
+    if st["state"] == "await_group":
+        group_link = update.message.text
+        st["groups"][group_link] = {}
+        st["selected_group"] = group_link
+        st["state"] = "await_topic"
+        save_data()
+        await update.message.reply_text(f"Ты выбрал(а) группу {group_link}\nТеперь укажи тему в формате 'Название, ID'")
+        return
 
-                    await context.bot.send_message(
-                        chat_id=uid,
-                        text=f"Ты выбрал(а) группу {st['groups'][st['selected_group']]}. Теперь укажи тему в формате: Название, ID"
-                    )
-                    return
-
-    # ========== Ввод темы вручную ==========
-    if st["state"] == "awaiting_topic":
+    if st["state"] == "await_topic":
         try:
-            name, tid = msg.text.split(",")
-            tid = int(tid.strip())
-            name = name.strip()
-        except:
-            return await msg.reply_text("Формат неверен. Используй: Название, ID")
+            name, tid = update.message.text.split(",")
+            st["topics"][tid.strip()] = name.strip()
+            st["selected_topic"] = tid.strip()
+            st["state"] = "await_post_text"
+            save_data()
+            await update.message.reply_text(f"Ты выбрал(а) тему {name.strip()}\nТеперь введи текст поста")
+        except ValueError:
+            await update.message.reply_text("Формат неверный. Пример: Новости, 123")
+        return
 
-        st["topics"][str(tid)] = name
-        st["selected_topic"] = str(tid)
-        st["state"] = "awaiting_text"
+    if st["state"] == "await_post_text":
+        st["post"]["text"] = update.message.text
+        st["state"] = "await_post_media"
         save_data()
+        await update.message.reply_text("Теперь отправь медиа (или нажми 'Пропустить')")
+        return
 
-        return await msg.reply_text(f"Ты выбрал(а) тему {name}. Теперь введи текст поста")
-
-    # ========== Остальная логика (пост, медиа и т.д.) ==========
-    if st["state"] == "awaiting_text":
-        st["post"]["text"] = msg.text
-        st["state"] = "awaiting_media"
+    if st["state"] == "await_post_media":
+        if update.message.photo:
+            st["post"]["media"] = update.message.photo[-1].file_id
+        st["state"] = "await_button_type"
         save_data()
-        kb = [[InlineKeyboardButton("Пропустить", callback_data="skip_media")]]
-        return await msg.reply_text("Теперь отправь фото/видео или нажми 'Пропустить'", reply_markup=InlineKeyboardMarkup(kb))
-
-    if st["state"] == "awaiting_media":
-        if msg.photo:
-            st["post"]["media"] = {"type": "photo", "file_id": msg.photo[-1].file_id}
-        elif msg.video:
-            st["post"]["media"] = {"type": "video", "file_id": msg.video.file_id}
-        else:
-            return await msg.reply_text("Это не фото или видео. Попробуйте снова.")
-        st["state"] = "awaiting_buttons"
-        save_data()
-        return await msg.reply_text("Добавить кнопки?", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("Реакции", callback_data="btn_react"), InlineKeyboardButton("Ссылки", callback_data="btn_link")],
+        kb = [
+            [InlineKeyboardButton("Добавить реакции", callback_data="btn_react")],
+            [InlineKeyboardButton("Добавить ссылку", callback_data="btn_link")],
             [InlineKeyboardButton("Пропустить", callback_data="skip_buttons")]
-        ]))
+        ]
+        await update.message.reply_text("Добавим кнопки?", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if st["state"] == "post_react_1":
+        em1 = update.message.text.strip()
+        st["reactions"]["r1"] = em1
+        st["state"] = "post_react_2"
+        save_data()
+        await update.message.reply_text("Теперь второе эмоджи")
+        return
+
+    if st["state"] == "post_react_2":
+        em2 = update.message.text.strip()
+        st["reactions"]["r2"] = em2
+        st["state"] = "confirm"
+        save_data()
+        kb = [
+            [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
+            [InlineKeyboardButton("📨 Отправить", callback_data="send")],
+            [InlineKeyboardButton("🏠 Начать", callback_data="restart")]
+        ]
+        await update.message.reply_text("Реакции добавлены.", reply_markup=InlineKeyboardMarkup(kb))
+        return
+
+    if st["state"] == "post_link":
+        try:
+            text, url = update.message.text.split(",")
+            st["post"]["link"] = {"text": text.strip(), "url": url.strip()}
+            st["state"] = "confirm"
+            save_data()
+            kb = [
+                [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
+                [InlineKeyboardButton("📨 Отправить", callback_data="send")],
+                [InlineKeyboardButton("🏠 Начать", callback_data="restart")]
+            ]
+            await update.message.reply_text("Ссылка добавлена.", reply_markup=InlineKeyboardMarkup(kb))
+        except ValueError:
+            await update.message.reply_text("Формат неверный. Пример: Подробнее, https://example.com")
+        return
 
 # ========== Инициализация ==========
+
 if __name__ == "__main__":
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
