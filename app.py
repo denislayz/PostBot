@@ -295,7 +295,7 @@ async def send_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_execute("DELETE FROM buttons WHERE user_id=?", (uid,))
     await context.bot.send_message(chat_id=uid, text="Пост отправлен!")
 
-def main():
+async def main():
     init_db()
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -305,13 +305,13 @@ def main():
     app.add_handler(CommandHandler("send", send_post))
 
     # Устанавливаем вебхук
-    app.bot.set_webhook(WEBHOOK_URL)
+    await app.bot.set_webhook(WEBHOOK_URL)
 
-    app.run_webhook(
+    await app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", "5000")),
         webhook_url=WEBHOOK_URL
     )
 
 if __name__ == '__main__':
-    main()
+    asyncio.run(main())
