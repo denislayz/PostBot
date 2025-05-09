@@ -43,6 +43,7 @@ def reset_state_but_keep(uid):
     prev = data.get(str(uid), {})
     return {"state": "idle", "groups": prev.get("groups", {}), "topics": {}}
 
+
 # ========== Хендлеры ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -56,6 +57,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kbd)
     )
 
+
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -68,23 +70,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await query.edit_message_text("Отметьте меня (@), я запомню этот чат как группу.")
 
-    # Шаг 2: упоминание в группе привязало её
-    if st["state"] == "waiting_for_mention":
-        # это не inline, а мы будем обрабатывать в message_handler при упоминании
-        return
-
-    # Шаг 3: пользователь выбрал группу — подтягиваем темы
+    # Шаг 2: выбор группы — подтягиваем темы
     if query.data.startswith("group:"):
         gid = int(query.data.split(":",1)[1])
         st = data[str(uid)] = reset_state_but_keep(uid)
-        st["groups"][str(gid)] = st["groups"].get(str(gid), "")  # сохраняем
+        st["groups"][str(gid)] = st["groups"].get(str(gid), "")
         st["selected_group"] = gid
 
-        # Получаем forum topics
+        # <<< Здесь требуется метод get_forum_topics из PTB>=20.5 >>>
         topics = await context.bot.get_forum_topics(chat_id=gid)
         st_topics = {}
         kbd = []
-        for t in topics:  # t: ForumTopic
+        for t in topics:  # t — ForumTopic
             st_topics[str(t.message_thread_id)] = t.name
             kbd.append([InlineKeyboardButton(t.name, callback_data=f"topic:{t.message_thread_id}")])
         st["topics"] = st_topics
@@ -96,7 +93,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kbd)
         )
 
-    # Шаг 4: выбор темы
+    # Шаг 3: выбор темы
     if query.data.startswith("topic:"):
         thread_id = int(query.data.split(":",1)[1])
         st["selected_topic"] = thread_id
@@ -104,18 +101,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
 
-    # Шаг назад
+    # Назад в меню групп
     if query.data == "back":
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
         return await start(update, context)
 
-    # Ниже — предпросмотр и отправка
+    # Предпросмотр
     if query.data == "preview":
         p = st["post"]
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        buttons = p.get("buttons", [])
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons",[])]) if p.get("buttons") else None
         if p.get("media"):
             return await context.bot.send_photo(
                 chat_id=uid, photo=p["media"], caption=text,
@@ -126,12 +122,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown", reply_markup=markup
         )
 
+    # Отправка в тему
     if query.data == "send":
         p = st["post"]
         gid = st["selected_group"]
         tid = st["selected_topic"]
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]) if p.get("buttons") else None
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons",[])]) if p.get("buttons") else None
         if p.get("media"):
             await context.bot.send_photo(
                 chat_id=gid, photo=p["media"], caption=text,
@@ -148,11 +145,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
 
+
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     st = get_user_state(uid)
 
-    # Шаг упоминания: добавление группы
+    # Упоминание в группе — привязка
     if st["state"] == "waiting_for_mention" and update.message.chat.type in ["group","supergroup"]:
         chat = update.effective_chat
         st["groups"][str(chat.id)] = chat.title or "Группа"
@@ -161,7 +159,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Группа «{chat.title}» добавлена.")
         return await start(update, context)
 
-    # Шаги создания поста
+    # Создание поста: шаги post_title, post_text, post_media, post_buttons ...
     if st["state"] == "post_title":
         txt = update.message.text or ""
         if txt != "-":
@@ -183,7 +181,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             st["post"]["media"] = update.message.photo[-1].file_id
         st["state"] = "post_buttons"
         save_data()
-        return await update.message.reply_text("Введите кнопки (текст|URL в строке), или «-»:")
+        return await update.message.reply_text("Введите кнопки (текст|URL в строке) или «-»:")
 
     if st["state"] == "post_buttons":
         txt = update.message.text or ""
@@ -207,8 +205,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== Запуск ==========
 if __name__ == "__main__":
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.ALL, message_handler))
-    app.run_polling(poll_interval=3.0)
+    # Обязательно обновите requirements.txt: python-telegram-bot>=20.5
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button_handler))
+    application.add_handler(MessageHandler(filters.ALL, message_handler))
+    application.run_polling(poll_interval=3.0)
