@@ -10,7 +10,10 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Параметры
-TOKEN = os.getenv("TELEGRAM_TOKEN")  # Токен бота
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    raise ValueError("Telegram token is not set in environment variables.")
+
 WEBHOOK_URL = "https://postbot-production.up.railway.app/webhook"  # URL для webhook
 data = {}  # Здесь будет храниться состояние пользователей, например для добавления групп и постов.
 
