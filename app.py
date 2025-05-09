@@ -70,14 +70,16 @@ def reset_state_but_keep(uid):
         "reaction_clicks": {}
     }
 
-# ========== Хендлеры ==========
-
+# ========== Хендлеры ========== 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     data[str(uid)] = reset_state_but_keep(uid)
     save_data()
-    kb = [[InlineKeyboardButton("Начать", callback_data="choose_group")]]
-    await update.message.reply_text("Нажмите кнопку, чтобы начать", reply_markup=InlineKeyboardMarkup(kb))
+    kb = [[InlineKeyboardButton("➕ Добавить группу", switch_inline_query="add_group")]]
+    await update.message.reply_text(
+        "Выберите группу для публикации:",
+        reply_markup=InlineKeyboardMarkup(kb)
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -89,13 +91,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
         return await query.edit_message_text("🔄 Перезапуск...", reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Начать", callback_data="choose_group")]]
+            [[InlineKeyboardButton("➕ Добавить группу", switch_inline_query="add_group")]]
         ))
 
     if query.data == "choose_group":
         st["state"] = "choose_group"
         save_data()
-        return await query.edit_message_text("Выберите группу (предполагается, что вы уже добавили их заранее)")
+        return await query.edit_message_text("Выберите группу:")
 
     if query.data == "skip_caption":
         st["post"]["caption"] = ""
@@ -117,7 +119,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "skip_buttons":
         st["state"] = "confirm"
         save_data()
-        return await query.edit_message_text("Кнопки пропущены.\nГотово к публикации. Выберите действие:",
+        return await query.edit_message_text("Кнопки пропущены. Готово к публикации.",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
                 [InlineKeyboardButton("📨 Отправить", callback_data="send")],
@@ -131,12 +133,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return await query.edit_message_text("Введите текст кнопки:")
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.chat.type != "private":
+        return  # Игнорировать сообщения не в ЛС
+
     uid = update.effective_user.id
     st = get_user_state(uid)
 
-    # Группа выбора
     if st["state"] == "choose_group":
-        st["selected_group"] = update.message.text
+        st["selected_group"] = update.message.text.strip()
         st["state"] = "choose_topic"
         save_data()
         return await update.message.reply_text(f"Ты выбрал(а) группу: {st['selected_group']}\nТеперь укажи тему (в формате: Название,ID)")
