@@ -208,7 +208,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
 
-    # Вставим небольшой интервал между запросами, чтобы избежать превышения лимита
     await app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
@@ -216,4 +215,5 @@ async def main():
         max_connections=100,
     )
 
-if
+if __name__ == '__main__':
+    asyncio.run(main())
