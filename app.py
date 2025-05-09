@@ -44,6 +44,19 @@ def reset_state_but_keep(uid):
     return {"state": "idle", "groups": prev.get("groups", {}), "topics": {}}
 
 
+# Функция-обёртка для получения списка тем через raw API
+async def fetch_forum_topics(bot, chat_id):
+    # Попробуем вызвать готовый метод
+    try:
+        return await bot.get_forum_topics(chat_id=chat_id)
+    except AttributeError:
+        # fallback: raw request
+        resp = await bot._request.post("getForumTopics", {"chat_id": chat_id})
+        result = resp["result"]
+        # Преобразуем каждый dict в ForumTopic
+        return [ForumTopic(**t) for t in result]
+
+
 # ========== Хендлеры ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -64,26 +77,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     st = get_user_state(uid)
 
-    # Шаг 1: добавить группу
+    # 1) Начало: добавление новой группы
     if query.data == "add_group":
         st["state"] = "waiting_for_mention"
         save_data()
         return await query.edit_message_text("Отметьте меня (@), я запомню этот чат как группу.")
 
-    # Шаг 2: выбор группы — подтягиваем темы
+    # 2) Выбор существующей группы — подтягиваем темы
     if query.data.startswith("group:"):
         gid = int(query.data.split(":",1)[1])
         st = data[str(uid)] = reset_state_but_keep(uid)
         st["groups"][str(gid)] = st["groups"].get(str(gid), "")
         st["selected_group"] = gid
 
-        # <<< Здесь требуется метод get_forum_topics из PTB>=20.5 >>>
-        topics = await context.bot.get_forum_topics(chat_id=gid)
+        # Получаем список тем (ForumTopic) с помощью обёртки
+        topics = await fetch_forum_topics(context.bot, chat_id=gid)
+
         st_topics = {}
         kbd = []
-        for t in topics:  # t — ForumTopic
+        for t in topics:
             st_topics[str(t.message_thread_id)] = t.name
-            kbd.append([InlineKeyboardButton(t.name, callback_data=f"topic:{t.message_thread_id}")])
+            kbd.append([InlineKeyboardButton(t.name,
+                                            callback_data=f"topic:{t.message_thread_id}")])
         st["topics"] = st_topics
         save_data()
 
@@ -93,7 +108,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kbd)
         )
 
-    # Шаг 3: выбор темы
+    # 3) Пользователь выбрал тему
     if query.data.startswith("topic:"):
         thread_id = int(query.data.split(":",1)[1])
         st["selected_topic"] = thread_id
@@ -101,17 +116,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
 
-    # Назад в меню групп
+    # 4) Назад к выбору группы
     if query.data == "back":
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
         return await start(update, context)
 
-    # Предпросмотр
+    # 5) Предпросмотр
     if query.data == "preview":
         p = st["post"]
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons",[])]) if p.get("buttons") else None
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]
+        ) if p.get("buttons") else None
         if p.get("media"):
             return await context.bot.send_photo(
                 chat_id=uid, photo=p["media"], caption=text,
@@ -122,13 +139,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown", reply_markup=markup
         )
 
-    # Отправка в тему
+    # 6) Отправка в тему
     if query.data == "send":
         p = st["post"]
         gid = st["selected_group"]
         tid = st["selected_topic"]
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons",[])]) if p.get("buttons") else None
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]
+        ) if p.get("buttons") else None
+
         if p.get("media"):
             await context.bot.send_photo(
                 chat_id=gid, photo=p["media"], caption=text,
@@ -141,6 +161,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=markup,
                 message_thread_id=tid
             )
+
         await query.edit_message_text("✅ Пост отправлен в тему!")
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
@@ -150,7 +171,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     st = get_user_state(uid)
 
-    # Упоминание в группе — привязка
+    # Привязка группы по упоминанию
     if st["state"] == "waiting_for_mention" and update.message.chat.type in ["group","supergroup"]:
         chat = update.effective_chat
         st["groups"][str(chat.id)] = chat.title or "Группа"
@@ -159,7 +180,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Группа «{chat.title}» добавлена.")
         return await start(update, context)
 
-    # Создание поста: шаги post_title, post_text, post_media, post_buttons ...
+    # Шаги создания поста
     if st["state"] == "post_title":
         txt = update.message.text or ""
         if txt != "-":
@@ -205,7 +226,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== Запуск ==========
 if __name__ == "__main__":
-    # Обязательно обновите requirements.txt: python-telegram-bot>=20.5
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
