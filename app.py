@@ -1,41 +1,40 @@
 import os
 import json
-from uuid import uuid4
+import asyncio
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
 from telegram.ext import (
-    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
-    ContextTypes, filters
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
 )
 
 # Настройки
-TOKEN = os.getenv("BOT_TOKEN") or "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
-WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://postbot-production.up.railway.app/webhook"
+TOKEN = os.getenv("BOT_TOKEN")  # BOT_TOKEN нужно добавить в переменные Railway
+WEBHOOK_URL = "https://postbot-production.up.railway.app/webhook"
 DATA_FILE = "data.json"
 
-# Инициализация хранилища
-def load_data():
-    if not os.path.exists(DATA_FILE):
-        return {}
+# Загрузка и сохранение состояния
+if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
-        return json.load(f)
+        data = json.load(f)
+else:
+    data = {}
 
-def save_data(data):
+def save_data(new_data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+        json.dump(new_data, f)
 
-data = load_data()
-
-# Хелперы
 def get_user_state(user_id):
-    return data.setdefault(str(user_id), {"state": "idle"})
+    if str(user_id) not in data:
+        data[str(user_id)] = {"state": "idle"}
+    return data[str(user_id)]
 
 def reset_user_state(user_id):
     data[str(user_id)] = {"state": "idle"}
     save_data(data)
 
-# Обработчики
+# Хендлеры
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = get_user_state(user_id)
@@ -43,10 +42,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not groups:
         keyboard = [[InlineKeyboardButton("Добавить группу", callback_data="add_group")]]
     else:
-        keyboard = [
-            [InlineKeyboardButton(name, callback_data=f"group:{gid}")]
-            for gid, name in groups.items()
-        ]
+        keyboard = [[InlineKeyboardButton(name, callback_data=f"group:{gid}")] for gid, name in groups.items()]
         keyboard.append([InlineKeyboardButton("Добавить группу", callback_data="add_group")])
 
     await update.message.reply_text(
@@ -80,18 +76,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("Назад", callback_data="back_to_groups")]
             ])
         )
-
     elif query.data == "make_post":
         state["state"] = "post_title"
         state["post"] = {}
         save_data(data)
-        await query.edit_message_text("Введите заголовок поста (или отправьте '-' чтобы пропустить):")
-
+        await query.edit_message_text("Введите заголовок поста (или '-' чтобы пропустить):")
     elif query.data == "add_topic":
         state["state"] = "add_topic"
         save_data(data)
         await query.edit_message_text("Введите название темы и её thread_id через пробел:")
-
     elif query.data == "remove_group":
         group_id = state.get("selected_group")
         if group_id:
@@ -100,11 +93,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data(data)
         await query.edit_message_text("Группа удалена.")
         await start(update, context)
-
     elif query.data == "back_to_groups":
         reset_user_state(user_id)
         await start(update, context)
-
     elif query.data == "preview_post":
         post = state.get("post", {})
         media = post.get("media")
@@ -115,7 +106,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_photo(chat_id=query.message.chat_id, photo=media, caption=f"*{post.get('title', '')}*\n{post.get('text', '')}", parse_mode='Markdown', reply_markup=markup)
         else:
             await context.bot.send_message(chat_id=query.message.chat_id, text=f"*{post.get('title', '')}*\n{post.get('text', '')}", parse_mode='Markdown', reply_markup=markup)
-
     elif query.data == "send_post":
         group_id = state.get("selected_group")
         post = state.get("post", {})
@@ -206,18 +196,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ошибка. Введите название и thread_id через пробел.")
         return
 
-# Запуск
-def main():
+# Запуск приложения с установкой webhook
+async def main():
     app = Application.builder().token(TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
 
-    app.run_webhook(
+    await app.bot.set_webhook(WEBHOOK_URL)
+
+    await app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
-        webhook_url=WEBHOOK_URL,
+        webhook_path="/webhook",
     )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
