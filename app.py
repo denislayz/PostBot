@@ -218,12 +218,11 @@ if __name__ == "__main__":
 
     async def main():
         await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.initialize()
+        await app.start()
+        print("Bot started...")
+        await app.updater.start_polling()
+        await app.updater.idle()
 
-        app = Application.builder().token(TOKEN).build()
-        app.add_handler(CommandHandler("start", start))
-        app.add_handler(CallbackQueryHandler(button_handler))
-        app.add_handler(MessageHandler(filters.ALL, message_handler))
-
-        await app.run_polling()
-
+    app = Application.builder().token(TOKEN).build()
     asyncio.run(main())
