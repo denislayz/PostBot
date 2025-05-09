@@ -1,7 +1,11 @@
 import os
 import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -21,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ========== Конфигурация ==========
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
-    raise ValueError("Переменная окружения TELEGRAM_TOKEN не установлена!")
+    raise ValueError("TELEGRAM_TOKEN не установлена!")
 
 DATA_FILE = "data.json"
 if os.path.exists(DATA_FILE):
@@ -37,7 +41,7 @@ def save_data():
 def get_user_state(uid):
     return data.setdefault(
         str(uid),
-        {"state": "idle", "groups": {}, "topics": {}, "post": {}}
+        {"state": "idle", "groups": {}, "topics": {}, "post": {}, "selected_group": None, "selected_topic": None}
     )
 
 def reset_state_but_keep(uid):
@@ -46,18 +50,33 @@ def reset_state_but_keep(uid):
         "state": "idle",
         "groups": prev.get("groups", {}),
         "topics": prev.get("topics", {}),
-        "post": {}
+        "post": {},
+        "selected_group": None,
+        "selected_topic": None
     }
 
 # ========== Хендлеры ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
+    """
+    Рисует главное меню (группы).
+    """
+    # Определяем, откуда вызываем: message или callback_query
+    if update.message:
+        uid = update.effective_user.id
+        send = update.message.reply_text
+    else:
+        uid = update.callback_query.from_user.id
+        # получаем chat_id из callback
+        def send(text, **kwargs):
+            return context.bot.send_message(chat_id=uid, text=text, **kwargs)
+
     st = get_user_state(uid)
     keyboard = [[InlineKeyboardButton("➕ Добавить группу", callback_data="add_group")]]
     for gid, title in st["groups"].items():
         keyboard.append([InlineKeyboardButton(title, callback_data=f"group:{gid}")])
-    await update.message.reply_text(
+
+    await send(
         "Выберите группу или добавьте новую:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -68,22 +87,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     st = get_user_state(uid)
 
-    # 1) Начало: добавить группу
+    # 1) Добавить группу
     if query.data == "add_group":
         st["state"] = "waiting_for_mention"
         save_data()
         return await query.edit_message_text(
-            "Отметьте меня (@), чтобы я запомнил этот чат как группу."
+            "Отметьте меня (@) в группе, чтобы я её запомнил."
         )
 
-    # 2) Выбор группы — показываем темы и кнопку «Добавить тему»
+    # 2) Выбор группы
     if query.data.startswith("group:"):
         gid = int(query.data.split(":",1)[1])
         st = data[str(uid)] = reset_state_but_keep(uid)
         st["groups"][str(gid)] = st["groups"].get(str(gid), "")
         st["selected_group"] = gid
 
-        # Кнопки для уже добавленных тем
         keyboard = []
         for tid, name in st["topics"].items():
             keyboard.append([InlineKeyboardButton(name, callback_data=f"topic:{tid}")])
@@ -91,7 +109,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
         save_data()
         return await query.edit_message_text(
-            "Выберите тему для поста или добавьте новую:",
+            "Выберите тему (или добавьте новую):",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
@@ -101,39 +119,45 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await query.edit_message_text(
             "Введите название темы и её thread_id через запятую.\n\n"
-            "Например:\n"
+            "Пример:\n"
             "Красота и Стиль, 1234567890"
         )
 
-    # 4) Пользователь выбрал тему
+    # 4) Выбор темы
     if query.data.startswith("topic:"):
-        thread_id = query.data.split(":",1)[1]
-        st["selected_topic"] = thread_id
+        tid = query.data.split(":",1)[1]
+        st["selected_topic"] = tid
         st["state"] = "post_title"
         save_data()
-        return await query.edit_message_text(
-            "Введите заголовок (или «-» чтобы пропустить):"
-        )
+        return await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
 
-    # 5) Назад к меню групп
+    # 5) Назад к группам
     if query.data == "back":
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
         return await start(update, context)
 
-    # 6) Предпросмотр поста
+    # 6) Предпросмотр
     if query.data == "preview":
         p = st.get("post", {})
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
         buttons = p.get("buttons", [])
-        markup = (
-            InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"]) for b in buttons]])
-            if buttons else None
-        )
-        if p.get("media"):
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]
+        ) if buttons else None
+
+        if p.get("media_type") == "photo":
             return await context.bot.send_photo(
                 chat_id=uid,
                 photo=p["media"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
+        if p.get("media_type") == "video":
+            return await context.bot.send_video(
+                chat_id=uid,
+                video=p["media"],
                 caption=text,
                 parse_mode="Markdown",
                 reply_markup=markup
@@ -145,21 +169,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=markup
         )
 
-    # 7) Отправка поста в тему
+    # 7) Отправка поста
     if query.data == "send":
         p = st.get("post", {})
-        gid = st["selected_group"]
+        gid = int(st["selected_group"])
         tid = int(st["selected_topic"])
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
         buttons = p.get("buttons", [])
-        markup = (
-            InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"]) for b in buttons]])
-            if buttons else None
-        )
-        if p.get("media"):
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]
+        ) if buttons else None
+
+        if p.get("media_type") == "photo":
             await context.bot.send_photo(
                 chat_id=gid,
                 photo=p["media"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup,
+                message_thread_id=tid
+            )
+        elif p.get("media_type") == "video":
+            await context.bot.send_video(
+                chat_id=gid,
+                video=p["media"],
                 caption=text,
                 parse_mode="Markdown",
                 reply_markup=markup,
@@ -173,6 +206,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=markup,
                 message_thread_id=tid
             )
+
         await query.edit_message_text("✅ Пост отправлен!")
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
@@ -181,7 +215,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     st = get_user_state(uid)
 
-    # Привязка группы по упоминанию
+    # A) Привязка группы
     if st["state"] == "waiting_for_mention" and update.message.chat.type in ["group","supergroup"]:
         chat = update.effective_chat
         st["groups"][str(chat.id)] = chat.title or "Группа"
@@ -190,11 +224,11 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Группа «{chat.title}» добавлена.")
         return await start(update, context)
 
-    # Ввод темы вручную
+    # B) Ввод темы вручную
     if st["state"] == "waiting_for_topic_entry":
-        text = update.message.text or ""
-        if "," in text:
-            name, tid = text.split(",",1)
+        txt = update.message.text or ""
+        if "," in txt:
+            name, tid = txt.split(",",1)
             name = name.strip()
             tid = tid.strip()
             if tid.isdigit():
@@ -202,41 +236,44 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 st["state"] = "idle"
                 save_data()
                 await update.message.reply_text(f"✅ Тема «{name}» ({tid}) добавлена!")
-                # Вернуться к выбору группы, чтобы показать темы
+                # вернуться к меню тем
                 return await button_handler(update, context)
-        # Неверный формат
         return await update.message.reply_text(
-            "Неверный формат. Введите:\n"
+            "Неверный формат. Используйте:\n"
             "Название темы, thread_id"
         )
 
-    # Создание поста: шаг 1 — заголовок
+    # C) Создание поста — Заголовок
     if st["state"] == "post_title":
         txt = update.message.text or ""
         if txt != "-":
             st.setdefault("post", {})["title"] = txt
         st["state"] = "post_text"
         save_data()
-        return await update.message.reply_text("Введите основной текст (или «-»):")
+        return await update.message.reply_text("Введите текст (или «-»):")
 
-    # Шаг 2 — текст
+    # D) Текст
     if st["state"] == "post_text":
         txt = update.message.text or ""
         if txt != "-":
             st["post"]["text"] = txt
         st["state"] = "post_media"
         save_data()
-        return await update.message.reply_text("Прикрепите фото или отправьте «-»:")
+        return await update.message.reply_text("Прикрепите фото/видео или отправьте «-»:")
 
-    # Шаг 3 — медиа
+    # E) Медиа (фото или видео)
     if st["state"] == "post_media":
         if update.message.photo:
+            st["post"]["media_type"] = "photo"
             st["post"]["media"] = update.message.photo[-1].file_id
+        elif update.message.video:
+            st["post"]["media_type"] = "video"
+            st["post"]["media"] = update.message.video.file_id
         st["state"] = "post_buttons"
         save_data()
         return await update.message.reply_text("Введите кнопки (текст|URL по строкам) или «-»:")
 
-    # Шаг 4 — кнопки
+    # F) Кнопки
     if st["state"] == "post_buttons":
         txt = update.message.text or ""
         if txt != "-":
@@ -259,8 +296,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========== Запуск ==========
 if __name__ == "__main__":
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.ALL, message_handler))
-    application.run_polling(poll_interval=3.0)
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.ALL, message_handler))
+    app.run_polling(poll_interval=3.0)
