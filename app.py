@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import requests
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, ForumTopic
 )
@@ -43,19 +44,21 @@ def reset_state_but_keep(uid):
     prev = data.get(str(uid), {})
     return {"state": "idle", "groups": prev.get("groups", {}), "topics": {}}
 
-
-# Функция-обёртка для получения списка тем через raw API
-async def fetch_forum_topics(bot, chat_id):
-    # Попробуем вызвать готовый метод
-    try:
-        return await bot.get_forum_topics(chat_id=chat_id)
-    except AttributeError:
-        # fallback: raw request
-        resp = await bot._request.post("getForumTopics", {"chat_id": chat_id})
-        result = resp["result"]
-        # Преобразуем каждый dict в ForumTopic
-        return [ForumTopic(**t) for t in result]
-
+# ========== Функция для получения тем форума через HTTP-запрос ==========
+def fetch_forum_topics_sync(chat_id: int):
+    url = f"https://api.telegram.org/bot{TOKEN}/getForumTopics"
+    resp = requests.get(url, params={"chat_id": chat_id})
+    resp.raise_for_status()
+    result = resp.json().get("result", [])
+    # Преобразуем в объекты ForumTopic
+    topics = []
+    for t in result:
+        try:
+            topics.append(ForumTopic(**t))
+        except TypeError:
+            # Если какие-то поля отличаются, берем как минимум id и name
+            topics.append(ForumTopic(message_thread_id=t["message_thread_id"], name=t["name"], icon_color=0, icon_custom_emoji_id=None))
+    return topics
 
 # ========== Хендлеры ==========
 
@@ -70,35 +73,37 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(kbd)
     )
 
-
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = query.from_user.id
     st = get_user_state(uid)
 
-    # 1) Начало: добавление новой группы
+    # 1) Начало: добавить группу
     if query.data == "add_group":
         st["state"] = "waiting_for_mention"
         save_data()
         return await query.edit_message_text("Отметьте меня (@), я запомню этот чат как группу.")
 
-    # 2) Выбор существующей группы — подтягиваем темы
+    # 2) Пользователь выбрал группу — подтягиваем темы
     if query.data.startswith("group:"):
         gid = int(query.data.split(":",1)[1])
         st = data[str(uid)] = reset_state_but_keep(uid)
         st["groups"][str(gid)] = st["groups"].get(str(gid), "")
         st["selected_group"] = gid
 
-        # Получаем список тем (ForumTopic) с помощью обёртки
-        topics = await fetch_forum_topics(context.bot, chat_id=gid)
+        # Получаем темы через синхронный HTTP
+        try:
+            topics = fetch_forum_topics_sync(gid)
+        except Exception as e:
+            logger.error("Не удалось получить темы: %s", e)
+            return await query.edit_message_text("❌ Ошибка при получении тем. Убедитесь, что группа — форум.")
 
         st_topics = {}
         kbd = []
         for t in topics:
             st_topics[str(t.message_thread_id)] = t.name
-            kbd.append([InlineKeyboardButton(t.name,
-                                            callback_data=f"topic:{t.message_thread_id}")])
+            kbd.append([InlineKeyboardButton(t.name, callback_data=f"topic:{t.message_thread_id}")])
         st["topics"] = st_topics
         save_data()
 
@@ -108,7 +113,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kbd)
         )
 
-    # 3) Пользователь выбрал тему
+    # 3) Выбор темы
     if query.data.startswith("topic:"):
         thread_id = int(query.data.split(":",1)[1])
         st["selected_topic"] = thread_id
@@ -116,7 +121,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
 
-    # 4) Назад к выбору группы
+    # 4) Назад к меню групп
     if query.data == "back":
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
@@ -124,11 +129,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 5) Предпросмотр
     if query.data == "preview":
-        p = st["post"]
+        p = st.get("post", {})
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]
-        ) if p.get("buttons") else None
+        buttons = p.get("buttons", [])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
         if p.get("media"):
             return await context.bot.send_photo(
                 chat_id=uid, photo=p["media"], caption=text,
@@ -139,16 +143,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown", reply_markup=markup
         )
 
-    # 6) Отправка в тему
+    # 6) Отправка поста в тему
     if query.data == "send":
-        p = st["post"]
+        p = st.get("post", {})
         gid = st["selected_group"]
         tid = st["selected_topic"]
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
-        markup = InlineKeyboardMarkup(
-            [[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]
-        ) if p.get("buttons") else None
-
+        buttons = p.get("buttons", [])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
         if p.get("media"):
             await context.bot.send_photo(
                 chat_id=gid, photo=p["media"], caption=text,
@@ -161,11 +163,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode="Markdown", reply_markup=markup,
                 message_thread_id=tid
             )
-
         await query.edit_message_text("✅ Пост отправлен в тему!")
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
-
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
