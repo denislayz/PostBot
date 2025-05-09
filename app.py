@@ -3,8 +3,6 @@ import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, CallbackContext
-from telegram.ext import ApplicationBuilder
-from telegram import Bot
 
 # Настройка логирования
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -65,7 +63,6 @@ async def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # Настройка вебхука
-    # Замените на свой URL вебхука
     await app.bot.set_webhook(WEBHOOK_URL)
 
     # Запуск бота с использованием webhook
@@ -75,8 +72,12 @@ async def main():
         url_path=TOKEN  # уникальная часть пути для вашего вебхука
     )
 
+# Запуск основной функции в уже работающем цикле
 if __name__ == "__main__":
-    # Запускаем основной цикл с асинхронным методом main
     loop = asyncio.get_event_loop()
-    loop.create_task(main())  # Запускаем main() как задачу
-    loop.run_forever()  # Даем циклу событий работать бесконечно
+
+    # Если цикл уже запущен, не создаем новый, а просто запускаем основной код
+    if loop.is_running():
+        asyncio.ensure_future(main())
+    else:
+        loop.run_until_complete(main())
