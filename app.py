@@ -1,7 +1,6 @@
 import os
 import json
 import logging
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -24,7 +23,6 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
     raise ValueError("Переменная окружения TELEGRAM_TOKEN не установлена!")
 
-# Файл для хранения состояния (группы, темы, черновики постов)
 DATA_FILE = "data.json"
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
@@ -33,14 +31,17 @@ else:
     data = {}
 
 def save_data():
-    with open(DATA_FILE, "w") as f:
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def get_user_state(uid):
-    return data.setdefault(str(uid), {"state": "idle"})
+    return data.setdefault(str(uid), {"state": "idle", "groups": {}, "topics": {}})
 
 def reset_user_state(uid):
-    data[str(uid)] = {"state": "idle"}
+    prev = data.get(str(uid), {})
+    groups = prev.get("groups", {})
+    topics = prev.get("topics", {})
+    data[str(uid)] = {"state": "idle", "groups": groups, "topics": topics}
     save_data()
 
 # ========== Хендлеры ==========
@@ -118,30 +119,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "preview":
-        post = state["post"]
-        media = post.get("media")
+        post = state.get("post", {})
         text = f"*{post.get('title','')}*\n{post.get('text','')}"
         buttons = post.get("buttons", [])
         markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
-        if media:
-            await context.bot.send_photo(uid, media, caption=text, parse_mode="Markdown", reply_markup=markup)
+        if post.get("media"):
+            await context.bot.send_photo(
+                chat_id=uid,
+                photo=post["media"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
         else:
-            await context.bot.send_message(uid, text, parse_mode="Markdown", reply_markup=markup)
+            await context.bot.send_message(
+                chat_id=uid,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
         return
 
     if query.data == "send":
+        post = state.get("post", {})
         gid = state.get("selected_group")
-        post = state["post"]
         text = f"*{post.get('title','')}*\n{post.get('text','')}"
-        media = post.get("media")
         buttons = post.get("buttons", [])
-        kwargs = {"chat_id": gid, "parse_mode":"Markdown"}
-        if media:
-            await context.bot.send_photo(**kwargs, photo=media, caption=text,
-                                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]))
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
+        if post.get("media"):
+            await context.bot.send_photo(
+                chat_id=gid,
+                photo=post["media"],
+                caption=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
         else:
-            await context.bot.send_message(**kwargs, text=text,
-                                           reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]))
+            await context.bot.send_message(
+                chat_id=gid,
+                text=text,
+                parse_mode="Markdown",
+                reply_markup=markup
+            )
         await query.edit_message_text("✅ Пост отправлен.")
         reset_user_state(uid)
         return
@@ -149,26 +168,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     state = get_user_state(uid)
-    # шаг: ожидание упоминания
+
+    # Ожидание упоминания в группе
     if state["state"] == "waiting_for_mention":
         chat = update.effective_chat
-        state.setdefault("groups", {})[str(chat.id)] = chat.title or "Группа"
+        st = data.setdefault(str(uid), {})
+        gr = st.setdefault("groups", {})
+        gr[str(chat.id)] = chat.title or "Группа"
+        st["state"] = "idle"
         save_data()
-        await update.message.reply_text(f"Добавил группу: {chat.title}")
-        reset_user_state(uid)
+        await update.message.reply_text(f"Группа «{chat.title}» добавлена!")
+        await start(update, context)
         return
 
-    # шаг: ввод заголовка
+    # Ввод заголовка
     if state["state"] == "post_title":
         text = update.message.text or ""
         if text != "-":
             state["post"]["title"] = text
         state["state"] = "post_text"
         save_data()
-        await update.message.reply_text("Введите текст (или «-»):")
+        await update.message.reply_text("Введите текст (или «-» чтобы пропустить):")
         return
 
-    # шаг: ввод текста
+    # Ввод текста
     if state["state"] == "post_text":
         text = update.message.text or ""
         if text != "-":
@@ -178,39 +201,39 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Прикрепите фото (или отправьте «-»):")
         return
 
-    # шаг: прикрепление медиа
+    # Прикрепление медиа
     if state["state"] == "post_media":
         if update.message.photo:
             state["post"]["media"] = update.message.photo[-1].file_id
         state["state"] = "post_buttons"
         save_data()
-        await update.message.reply_text("Введите кнопки (текст|URL в строке), «-» — пропустить:")
+        await update.message.reply_text("Введите кнопки (текст|URL на строку), «-» — пропустить:")
         return
 
-    # шаг: ввод кнопок
+    # Ввод кнопок
     if state["state"] == "post_buttons":
         text = update.message.text or ""
         if text != "-":
-            buttons=[] 
+            buttons = []
             for line in text.splitlines():
                 if "|" in line:
-                    t,u=line.split("|",1)
+                    t,u = line.split("|",1)
                     buttons.append({"text":t.strip(),"url":u.strip()})
-            state["post"]["buttons"]=buttons
-        state["state"]="confirm"
+            state["post"]["buttons"] = buttons
+        state["state"] = "confirm"
         save_data()
         await update.message.reply_text(
-            "Готово. Предпросмотр или отправить?",
+            "Готово. Хотите предпросмотр или сразу отправить?",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🔍 Предпросмотр",callback_data="preview")],
-                [InlineKeyboardButton("📨 Отправить",callback_data="send")],
-                [InlineKeyboardButton("❌ Отмена",callback_data="back")]
+                [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
+                [InlineKeyboardButton("📨 Отправить", callback_data="send")],
+                [InlineKeyboardButton("❌ Отмена", callback_data="back")]
             ])
         )
+        return
 
 # ========== Запуск ==========
-if __name__=="__main__":
-    # Через asyncio.run polling не конфликтует с loop на Railway
+if __name__ == "__main__":
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_handler))
