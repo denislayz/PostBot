@@ -1,7 +1,9 @@
 import os
 import json
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup, ForumTopic
+)
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -25,7 +27,7 @@ if not TOKEN:
 
 DATA_FILE = "data.json"
 if os.path.exists(DATA_FILE):
-    with open(DATA_FILE, "r") as f:
+    with open(DATA_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 else:
     data = {}
@@ -37,207 +39,176 @@ def save_data():
 def get_user_state(uid):
     return data.setdefault(str(uid), {"state": "idle", "groups": {}, "topics": {}})
 
-def reset_user_state(uid):
+def reset_state_but_keep(uid):
     prev = data.get(str(uid), {})
-    groups = prev.get("groups", {})
-    topics = prev.get("topics", {})
-    data[str(uid)] = {"state": "idle", "groups": groups, "topics": topics}
-    save_data()
+    return {"state": "idle", "groups": prev.get("groups", {}), "topics": {}}
 
 # ========== Хендлеры ==========
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    state = get_user_state(uid)
-    groups = state.get("groups", {})
-    if not groups:
-        keyboard = [[InlineKeyboardButton("➕ Добавить группу", callback_data="add_group")]]
-    else:
-        keyboard = [
-            [InlineKeyboardButton(name, callback_data=f"group:{gid}")]
-            for gid, name in groups.items()
-        ]
-        keyboard.append([InlineKeyboardButton("➕ Добавить группу", callback_data="add_group")])
+    st = get_user_state(uid)
+    kbd = [[InlineKeyboardButton("➕ Добавить группу", callback_data="add_group")]]
+    for gid, title in st["groups"].items():
+        kbd.append([InlineKeyboardButton(title, callback_data=f"group:{gid}")])
     await update.message.reply_text(
         "Выберите группу или добавьте новую:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+        reply_markup=InlineKeyboardMarkup(kbd)
     )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     uid = query.from_user.id
-    state = get_user_state(uid)
+    st = get_user_state(uid)
 
+    # Шаг 1: добавить группу
     if query.data == "add_group":
-        state["state"] = "waiting_for_mention"
+        st["state"] = "waiting_for_mention"
         save_data()
-        await query.edit_message_text("Отметьте меня (@), я запомню этот чат (группу).")
+        return await query.edit_message_text("Отметьте меня (@), я запомню этот чат как группу.")
+
+    # Шаг 2: упоминание в группе привязало её
+    if st["state"] == "waiting_for_mention":
+        # это не inline, а мы будем обрабатывать в message_handler при упоминании
         return
 
+    # Шаг 3: пользователь выбрал группу — подтягиваем темы
     if query.data.startswith("group:"):
-        gid = query.data.split(":",1)[1]
-        state["selected_group"] = gid
-        state["state"] = "group_menu"
+        gid = int(query.data.split(":",1)[1])
+        st = data[str(uid)] = reset_state_but_keep(uid)
+        st["groups"][str(gid)] = st["groups"].get(str(gid), "")  # сохраняем
+        st["selected_group"] = gid
+
+        # Получаем forum topics
+        topics = await context.bot.get_forum_topics(chat_id=gid)
+        st_topics = {}
+        kbd = []
+        for t in topics:  # t: ForumTopic
+            st_topics[str(t.message_thread_id)] = t.name
+            kbd.append([InlineKeyboardButton(t.name, callback_data=f"topic:{t.message_thread_id}")])
+        st["topics"] = st_topics
         save_data()
-        await query.edit_message_text(
-            "Меню группы:",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("➕ Сделать пост", callback_data="make_post")],
-                [InlineKeyboardButton("🗂 Добавить тему", callback_data="add_topic")],
-                [InlineKeyboardButton("❌ Удалить группу", callback_data="remove_group")],
-                [InlineKeyboardButton("◀️ Назад", callback_data="back")]
-            ])
+
+        kbd.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
+        return await query.edit_message_text(
+            "Выберите тему для поста:",
+            reply_markup=InlineKeyboardMarkup(kbd)
         )
-        return
 
-    if query.data == "make_post":
-        state["state"] = "post_title"
-        state["post"] = {}
+    # Шаг 4: выбор темы
+    if query.data.startswith("topic:"):
+        thread_id = int(query.data.split(":",1)[1])
+        st["selected_topic"] = thread_id
+        st["state"] = "post_title"
         save_data()
-        await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
-        return
+        return await query.edit_message_text("Введите заголовок (или «-» чтобы пропустить):")
 
-    if query.data == "add_topic":
-        state["state"] = "topic_name"
-        save_data()
-        await query.edit_message_text("Введите название темы и thread_id через пробел:")
-        return
-
-    if query.data == "remove_group":
-        gid = state.get("selected_group")
-        if gid:
-            state["groups"].pop(gid, None)
-        reset_user_state(uid)
-        await query.edit_message_text("Группа удалена.")
-        await start(update, context)
-        return
-
+    # Шаг назад
     if query.data == "back":
-        reset_user_state(uid)
-        await start(update, context)
-        return
+        data[str(uid)] = reset_state_but_keep(uid)
+        save_data()
+        return await start(update, context)
 
+    # Ниже — предпросмотр и отправка
     if query.data == "preview":
-        post = state.get("post", {})
-        text = f"*{post.get('title','')}*\n{post.get('text','')}"
-        buttons = post.get("buttons", [])
+        p = st["post"]
+        text = f"*{p.get('title','')}*\n{p.get('text','')}"
+        buttons = p.get("buttons", [])
         markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
-        if post.get("media"):
-            await context.bot.send_photo(
-                chat_id=uid,
-                photo=post["media"],
-                caption=text,
-                parse_mode="Markdown",
-                reply_markup=markup
+        if p.get("media"):
+            return await context.bot.send_photo(
+                chat_id=uid, photo=p["media"], caption=text,
+                parse_mode="Markdown", reply_markup=markup
             )
-        else:
-            await context.bot.send_message(
-                chat_id=uid,
-                text=text,
-                parse_mode="Markdown",
-                reply_markup=markup
-            )
-        return
+        return await context.bot.send_message(
+            chat_id=uid, text=text,
+            parse_mode="Markdown", reply_markup=markup
+        )
 
     if query.data == "send":
-        post = state.get("post", {})
-        gid = state.get("selected_group")
-        text = f"*{post.get('title','')}*\n{post.get('text','')}"
-        buttons = post.get("buttons", [])
-        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
-        if post.get("media"):
+        p = st["post"]
+        gid = st["selected_group"]
+        tid = st["selected_topic"]
+        text = f"*{p.get('title','')}*\n{p.get('text','')}"
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in p.get("buttons", [])]) if p.get("buttons") else None
+        if p.get("media"):
             await context.bot.send_photo(
-                chat_id=gid,
-                photo=post["media"],
-                caption=text,
-                parse_mode="Markdown",
-                reply_markup=markup
+                chat_id=gid, photo=p["media"], caption=text,
+                parse_mode="Markdown", reply_markup=markup,
+                message_thread_id=tid
             )
         else:
             await context.bot.send_message(
-                chat_id=gid,
-                text=text,
-                parse_mode="Markdown",
-                reply_markup=markup
+                chat_id=gid, text=text,
+                parse_mode="Markdown", reply_markup=markup,
+                message_thread_id=tid
             )
-        await query.edit_message_text("✅ Пост отправлен.")
-        reset_user_state(uid)
-        return
+        await query.edit_message_text("✅ Пост отправлен в тему!")
+        data[str(uid)] = reset_state_but_keep(uid)
+        save_data()
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    state = get_user_state(uid)
+    st = get_user_state(uid)
 
-    # Ожидание упоминания в группе
-    if state["state"] == "waiting_for_mention":
+    # Шаг упоминания: добавление группы
+    if st["state"] == "waiting_for_mention" and update.message.chat.type in ["group","supergroup"]:
         chat = update.effective_chat
-        st = data.setdefault(str(uid), {})
-        gr = st.setdefault("groups", {})
-        gr[str(chat.id)] = chat.title or "Группа"
+        st["groups"][str(chat.id)] = chat.title or "Группа"
         st["state"] = "idle"
         save_data()
-        await update.message.reply_text(f"Группа «{chat.title}» добавлена!")
-        await start(update, context)
-        return
+        await update.message.reply_text(f"✅ Группа «{chat.title}» добавлена.")
+        return await start(update, context)
 
-    # Ввод заголовка
-    if state["state"] == "post_title":
-        text = update.message.text or ""
-        if text != "-":
-            state["post"]["title"] = text
-        state["state"] = "post_text"
+    # Шаги создания поста
+    if st["state"] == "post_title":
+        txt = update.message.text or ""
+        if txt != "-":
+            st.setdefault("post", {})["title"] = txt
+        st["state"] = "post_text"
         save_data()
-        await update.message.reply_text("Введите текст (или «-» чтобы пропустить):")
-        return
+        return await update.message.reply_text("Введите текст (или «-»):")
 
-    # Ввод текста
-    if state["state"] == "post_text":
-        text = update.message.text or ""
-        if text != "-":
-            state["post"]["text"] = text
-        state["state"] = "post_media"
+    if st["state"] == "post_text":
+        txt = update.message.text or ""
+        if txt != "-":
+            st["post"]["text"] = txt
+        st["state"] = "post_media"
         save_data()
-        await update.message.reply_text("Прикрепите фото (или отправьте «-»):")
-        return
+        return await update.message.reply_text("Прикрепите фото или «-»:")
 
-    # Прикрепление медиа
-    if state["state"] == "post_media":
+    if st["state"] == "post_media":
         if update.message.photo:
-            state["post"]["media"] = update.message.photo[-1].file_id
-        state["state"] = "post_buttons"
+            st["post"]["media"] = update.message.photo[-1].file_id
+        st["state"] = "post_buttons"
         save_data()
-        await update.message.reply_text("Введите кнопки (текст|URL на строку), «-» — пропустить:")
-        return
+        return await update.message.reply_text("Введите кнопки (текст|URL в строке), или «-»:")
 
-    # Ввод кнопок
-    if state["state"] == "post_buttons":
-        text = update.message.text or ""
-        if text != "-":
-            buttons = []
-            for line in text.splitlines():
+    if st["state"] == "post_buttons":
+        txt = update.message.text or ""
+        if txt != "-":
+            btns = []
+            for line in txt.splitlines():
                 if "|" in line:
                     t,u = line.split("|",1)
-                    buttons.append({"text":t.strip(),"url":u.strip()})
-            state["post"]["buttons"] = buttons
-        state["state"] = "confirm"
+                    btns.append({"text":t.strip(),"url":u.strip()})
+            st["post"]["buttons"] = btns
+        st["state"] = "confirm"
         save_data()
-        await update.message.reply_text(
-            "Готово. Хотите предпросмотр или сразу отправить?",
+        return await update.message.reply_text(
+            "Готово: предпросмотр или отправить?",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🔍 Предпросмотр", callback_data="preview")],
                 [InlineKeyboardButton("📨 Отправить", callback_data="send")],
                 [InlineKeyboardButton("❌ Отмена", callback_data="back")]
             ])
         )
-        return
 
 # ========== Запуск ==========
 if __name__ == "__main__":
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.ALL, message_handler))
-
-    # Запускаем polling
-    application.run_polling(poll_interval=3.0)
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(MessageHandler(filters.ALL, message_handler))
+    app.run_polling(poll_interval=3.0)
