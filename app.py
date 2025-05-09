@@ -214,8 +214,13 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ========== Инициализация ==========
 
 if __name__ == "__main__":
+       async def main():
+        await app.bot.delete_webhook(drop_pending_updates=True)
+        await app.run_polling()
+           
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.ALL, message_handler))
-    app.run_polling()
+
+    asyncio.run(main())
