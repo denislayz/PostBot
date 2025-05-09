@@ -77,7 +77,6 @@ async def main():
 
 if __name__ == "__main__":
     # Запускаем основной цикл с асинхронным методом main
-    import asyncio
     loop = asyncio.get_event_loop()
     loop.create_task(main())  # Запускаем main() как задачу
     loop.run_forever()  # Даем циклу событий работать бесконечно
