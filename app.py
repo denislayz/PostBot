@@ -1,36 +1,42 @@
 import os
 import json
-import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
-    CallbackQueryHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
 
-# Загрузка данных
-DATA_FILE = "user_data.json"
+TOKEN = os.getenv("BOT_TOKEN")
+WEBHOOK_URL = "https://postbot-production.up.railway.app/webhook"
+
+DATA_FILE = "data.json"
+
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
         data = json.load(f)
 else:
     data = {}
 
-def save_data(data_dict):
+def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data_dict, f)
+        json.dump(data, f)
 
 def get_user_state(user_id):
-    return data.setdefault(str(user_id), {"state": "idle"})
+    user_id = str(user_id)
+    if user_id not in data:
+        data[user_id] = {"state": "idle"}
+    return data[user_id]
 
 def reset_user_state(user_id):
     data[str(user_id)] = {"state": "idle"}
     save_data(data)
 
-# Обработчики
+# --- Handlers ---
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = get_user_state(user_id)
@@ -201,26 +207,19 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ошибка. Введите название и thread_id через пробел.")
         return
 
-# Основной блок запуска с вебхуком
-WEBHOOK_URL = "https://postbot-production.up.railway.app/webhook"
-TOKEN = os.getenv("BOT_TOKEN")  # убедись, что переменная окружения BOT_TOKEN установлена в Railway
+# --- MAIN ENTRYPOINT ---
 
-async def main():
+def main():
     app = Application.builder().token(TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
 
-    # Устанавливаем webhook
-    await app.bot.set_webhook(WEBHOOK_URL)
-
-    # Запускаем веб-сервер
-    await app.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
-        webhook_url=WEBHOOK_URL,
+        webhook_url=WEBHOOK_URL
     )
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
