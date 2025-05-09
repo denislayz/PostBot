@@ -78,6 +78,6 @@ if __name__ == "__main__":
 
     # Если цикл уже запущен, не создаем новый, а просто запускаем основной код
     if loop.is_running():
-        asyncio.ensure_future(main())
+        asyncio.ensure_future(main())  # Используем ensure_future, чтобы запустить функцию
     else:
         loop.run_until_complete(main())
