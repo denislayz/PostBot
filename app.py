@@ -1,317 +1,223 @@
 import os
-import sqlite3
-import asyncio
-
+import json
+from uuid import uuid4
 from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 )
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    Application, CommandHandler, CallbackQueryHandler, MessageHandler,
     ContextTypes, filters
 )
 
-# ================== НАСТРОЙКИ ==================
-TOKEN = '7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY'
-WEBHOOK_URL = 'https://postbot-production.up.railway.app/webhook'
-DB_PATH = os.path.join(os.path.dirname(__file__), 'data.db')
-# ==============================================
+# Настройки
+TOKEN = os.getenv("BOT_TOKEN") or "7159627672:AAFoa1eN1JUFYaOwO0nqVCFv6AKIol3o_aY"
+WEBHOOK_URL = os.getenv("WEBHOOK_URL") or "https://postbot-production.up.railway.app/webhook"
+DATA_FILE = "data.json"
 
-# ========== ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ ==========
-def init_db():
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    # Таблица пользователей
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY
-    )""")
-    # Таблица групп
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS groups (
-        group_id INTEGER,
-        user_id  INTEGER,
-        title    TEXT,
-        PRIMARY KEY (group_id, user_id)
-    )""")
-    # Таблица тем
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS topics (
-        topic_id    INTEGER PRIMARY KEY AUTOINCREMENT,
-        group_id    INTEGER,
-        user_id     INTEGER,
-        title       TEXT
-    )""")
-    # Таблица черновиков постов
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS drafts (
-        user_id     INTEGER PRIMARY KEY,
-        group_id    INTEGER,
-        topic_id    INTEGER,
-        title       TEXT,
-        text        TEXT
-    )""")
-    # Таблица медиа для черновиков
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS media (
-        user_id   INTEGER,
-        file_id   TEXT
-    )""")
-    # Таблица кнопок для черновиков
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS buttons (
-        user_id   INTEGER,
-        label     TEXT,
-        url       TEXT
-    )""")
-    con.commit()
-    con.close()
+# Инициализация хранилища
+def load_data():
+    if not os.path.exists(DATA_FILE):
+        return {}
+    with open(DATA_FILE, "r") as f:
+        return json.load(f)
 
-# ======== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ========
-def db_execute(query, params=(), fetch=False):
-    con = sqlite3.connect(DB_PATH)
-    cur = con.cursor()
-    cur.execute(query, params)
-    if fetch:
-        result = cur.fetchall()
-    else:
-        result = None
-    con.commit()
-    con.close()
-    return result
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-# ========== HANDLERS ==========
+data = load_data()
 
+# Хелперы
+def get_user_state(user_id):
+    return data.setdefault(str(user_id), {"state": "idle"})
+
+def reset_user_state(user_id):
+    data[str(user_id)] = {"state": "idle"}
+    save_data(data)
+
+# Обработчики
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    db_execute("INSERT OR IGNORE INTO users(user_id) VALUES(?)", (uid,))
-    # Главное меню
-    kb = [
-        [InlineKeyboardButton("Выбрать группу", callback_data='select_group')],
-        [InlineKeyboardButton("Добавить группу", callback_data='add_group')]
-    ]
-    await update.message.reply_text("Главное меню:", reply_markup=InlineKeyboardMarkup(kb))
+    user_id = update.effective_user.id
+    state = get_user_state(user_id)
+    groups = state.get("groups", {})
+    if not groups:
+        keyboard = [[InlineKeyboardButton("Добавить группу", callback_data="add_group")]]
+    else:
+        keyboard = [
+            [InlineKeyboardButton(name, callback_data=f"group:{gid}")]
+            for gid, name in groups.items()
+        ]
+        keyboard.append([InlineKeyboardButton("Добавить группу", callback_data="add_group")])
 
+    await update.message.reply_text(
+        "Выберите группу для работы с постами или добавьте новую:",
+        reply_markup=InlineKeyboardMarkup(keyboard)
+    )
 
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    uid = query.from_user.id
-    data = query.data
+    user_id = str(query.from_user.id)
+    state = get_user_state(user_id)
 
-    # --- Выбрать группу ---
-    if data == 'select_group':
-        groups = db_execute(
-            "SELECT group_id, title FROM groups WHERE user_id=?", (uid,), fetch=True
-        )
-        if not groups:
-            await query.edit_message_text("Нет подключенных групп.")
-            return
-        kb = [
-            [InlineKeyboardButton(title, callback_data=f'grp_{gid}')]
-            for gid, title in groups
-        ]
-        await query.edit_message_text("Выберите группу:", reply_markup=InlineKeyboardMarkup(kb))
+    if query.data == "add_group":
+        state["state"] = "waiting_for_group_mention"
+        save_data(data)
+        await query.edit_message_text("Пожалуйста, упомяните меня в группе, чтобы я получил её ID.")
+        return
 
-    # --- После выбора группы ---
-    elif data.startswith('grp_'):
-        gid = int(data.split('_')[1])
-        # Сохраним выбор в drafts.user_id
-        db_execute(
-            "INSERT OR REPLACE INTO drafts(user_id, group_id) VALUES(?,?)",
-            (uid, gid)
+    if query.data.startswith("group:"):
+        gid = query.data.split(":")[1]
+        state["selected_group"] = gid
+        state["state"] = "group_menu"
+        save_data(data)
+        await query.edit_message_text(
+            "Выберите действие:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Сделать пост", callback_data="make_post")],
+                [InlineKeyboardButton("Добавить тему", callback_data="add_topic")],
+                [InlineKeyboardButton("Удалить группу", callback_data="remove_group")],
+                [InlineKeyboardButton("Назад", callback_data="back_to_groups")]
+            ])
         )
-        kb = [
-            [InlineKeyboardButton("Сделать пост", callback_data='make_post')],
-            [InlineKeyboardButton("Добавить тему", callback_data='add_topic')],
-            [InlineKeyboardButton("Удалить группу", callback_data='del_group')]
-        ]
-        await query.edit_message_text("Группа выбрана:", reply_markup=InlineKeyboardMarkup(kb))
 
-    # --- Добавить группу инструкции ---
-    elif data == 'add_group':
-        text = (
-            "Чтобы добавить группу:\n"
-            "1. Добавьте бота в группу и сделайте его админом.\n"
-            "2. Отправьте любое сообщение в эту группу.\n"
-            "3. Вернитесь и нажмите /start."
-        )
-        await query.edit_message_text(text)
+    elif query.data == "make_post":
+        state["state"] = "post_title"
+        state["post"] = {}
+        save_data(data)
+        await query.edit_message_text("Введите заголовок поста (или отправьте '-' чтобы пропустить):")
 
-    # --- Удалить группу ---
-    elif data == 'del_group':
-        # читаем из drafts таблицы
-        rec = db_execute(
-            "SELECT group_id FROM drafts WHERE user_id=?", (uid,), fetch=True
-        )
-        if rec:
-            db_execute("DELETE FROM groups WHERE user_id=? AND group_id=?", (uid, rec[0][0]))
-            await query.edit_message_text("Группа удалена.")
+    elif query.data == "add_topic":
+        state["state"] = "add_topic"
+        save_data(data)
+        await query.edit_message_text("Введите название темы и её thread_id через пробел:")
+
+    elif query.data == "remove_group":
+        group_id = state.get("selected_group")
+        if group_id:
+            state["groups"].pop(group_id, None)
+        reset_user_state(user_id)
+        save_data(data)
+        await query.edit_message_text("Группа удалена.")
+        await start(update, context)
+
+    elif query.data == "back_to_groups":
+        reset_user_state(user_id)
+        await start(update, context)
+
+    elif query.data == "preview_post":
+        post = state.get("post", {})
+        media = post.get("media")
+        buttons = post.get("buttons", [])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
+
+        if media:
+            await context.bot.send_photo(chat_id=query.message.chat_id, photo=media, caption=f"*{post.get('title', '')}*\n{post.get('text', '')}", parse_mode='Markdown', reply_markup=markup)
         else:
-            await query.edit_message_text("Ошибка удаления.")
+            await context.bot.send_message(chat_id=query.message.chat_id, text=f"*{post.get('title', '')}*\n{post.get('text', '')}", parse_mode='Markdown', reply_markup=markup)
 
-    # --- Сделать пост ---
-    elif data == 'make_post':
-        # Начинаем черновик
-        db_execute(
-            "INSERT OR REPLACE INTO drafts(user_id, title, text) VALUES(?,?,?)",
-            (uid, '', '')
-        )
-        await query.edit_message_text("Введите заголовок (или /skip):")
+    elif query.data == "send_post":
+        group_id = state.get("selected_group")
+        post = state.get("post", {})
+        thread_id = post.get("thread_id")
 
-    # --- Добавить тему (thread) ---
-    elif data == 'add_topic':
-        await query.edit_message_text("Отправьте ID темы (thread_id) и название через пробел:")
+        kwargs = {"chat_id": group_id}
+        if thread_id:
+            kwargs["message_thread_id"] = thread_id
 
-    # Можно добавить «Назад» и «Отменить» в каждом меню аналогично
+        buttons = post.get("buttons", [])
+        markup = InlineKeyboardMarkup([[InlineKeyboardButton(b["text"], url=b["url"])] for b in buttons]) if buttons else None
 
+        if post.get("media"):
+            await context.bot.send_photo(caption=f"*{post.get('title', '')}*\n{post.get('text', '')}", photo=post["media"], parse_mode='Markdown', reply_markup=markup, **kwargs)
+        else:
+            await context.bot.send_message(text=f"*{post.get('title', '')}*\n{post.get('text', '')}", parse_mode='Markdown', reply_markup=markup, **kwargs)
+
+        await query.edit_message_text("Пост отправлен!")
+        reset_user_state(user_id)
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    chat = update.message.chat
-    text = update.message.text or ''
+    user_id = str(update.effective_user.id)
+    state = get_user_state(user_id)
+    text = update.message.text
+    photo = update.message.photo[-1].file_id if update.message.photo else None
 
-    # --- Сообщение из группы для регистрации ---
-    if chat.type in ['group', 'supergroup']:
-        db_execute(
-            "INSERT OR IGNORE INTO users(user_id) VALUES(?)", (uid,)
+    if state["state"] == "waiting_for_group_mention":
+        if update.message.chat.type in ["group", "supergroup"]:
+            group_id = str(update.message.chat.id)
+            group_name = update.message.chat.title
+            state.setdefault("groups", {})[group_id] = group_name
+            save_data(data)
+            await update.message.reply_text(f"Группа '{group_name}' добавлена.")
+        return
+
+    if state["state"] == "post_title":
+        if text != "-":
+            state["post"]["title"] = text
+        state["state"] = "post_text"
+        save_data(data)
+        await update.message.reply_text("Введите основной текст поста (или '-' чтобы пропустить):")
+        return
+
+    if state["state"] == "post_text":
+        if text != "-":
+            state["post"]["text"] = text
+        state["state"] = "post_media"
+        save_data(data)
+        await update.message.reply_text("Отправьте изображение (или '-' чтобы пропустить):")
+        return
+
+    if state["state"] == "post_media":
+        if photo:
+            state["post"]["media"] = photo
+        state["state"] = "post_buttons"
+        save_data(data)
+        await update.message.reply_text("Введите кнопки (текст и ссылка через |, одна на строку), или '-' чтобы пропустить:")
+        return
+
+    if state["state"] == "post_buttons":
+        if text != "-":
+            buttons = []
+            for line in text.strip().splitlines():
+                if "|" in line:
+                    btext, url = line.split("|", 1)
+                    buttons.append({"text": btext.strip(), "url": url.strip()})
+            state["post"]["buttons"] = buttons
+        state["state"] = "confirm_post"
+        save_data(data)
+        await update.message.reply_text(
+            "Предпросмотр поста:",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("Предпросмотр", callback_data="preview_post")],
+                [InlineKeyboardButton("Отправить", callback_data="send_post")],
+                [InlineKeyboardButton("Отменить", callback_data="back_to_groups")]
+            ])
         )
-        db_execute(
-            "INSERT OR IGNORE INTO groups(group_id, user_id, title) VALUES(?,?,?)",
-            (chat.id, uid, chat.title)
-        )
-        await update.message.reply_text("Группа зарегистрирована.")
         return
 
-    # --- Работа с черновиком ---
-    rec = db_execute(
-        "SELECT group_id, title, text FROM drafts WHERE user_id=?", (uid,), fetch=True
-    )
-    if not rec:
-        return
-
-    group_id, title, body = rec[0]
-
-    # Узнаём шаг по title/text в таблице drafts: если title пуст, запрашиваем заголовок
-    if title == '':
-        if text.startswith('/skip'):
-            new_title = ''
-        else:
-            new_title = text
-        db_execute("UPDATE drafts SET title=? WHERE user_id=?", (new_title, uid))
-        await update.message.reply_text("Введите основной текст (или /skip):")
-        return
-
-    if body == '':
-        if text.startswith('/skip'):
-            new_body = ''
-        else:
-            new_body = text
-        db_execute("UPDATE drafts SET text=? WHERE user_id=?", (new_body, uid))
-        await update.message.reply_text("Отправьте фото (или /done если без медиа):")
-        return
-
-    # Медиа
-    if update.message.photo:
-        file_id = update.message.photo[-1].file_id
-        db_execute("INSERT INTO media(user_id, file_id) VALUES(?,?)", (uid, file_id))
-        await update.message.reply_text("Фото получено. /done когда закончите.")
-        return
-
-    # Завершили медиа
-    if text.startswith('/done'):
-        # Сразу предпросмотр
-        await preview_post(update, context)
-        return
-
-    # Добавление инлайн-кнопок
-    if text.startswith('/button '):
-        # формат: /button Label|https://link
+    if state["state"] == "add_topic":
         try:
-            label, url = text[len('/button '):].split('|', 1)
-            db_execute("INSERT INTO buttons(user_id, label, url) VALUES(?,?,?)", (uid, label, url))
-            await update.message.reply_text(f"Кнопка '{label}' добавлена.")
+            name, thread_id = text.rsplit(" ", 1)
+            state.setdefault("topics", {})[name] = int(thread_id)
+            save_data(data)
+            await update.message.reply_text(f"Тема '{name}' добавлена.")
+            reset_user_state(user_id)
         except:
-            await update.message.reply_text("Неправильный формат. Используй /button Текст|URL")
+            await update.message.reply_text("Ошибка. Введите название и thread_id через пробел.")
         return
 
-    # /preview
-    if text.startswith('/preview'):
-        await preview_post(update, context)
-        return
-
-    # /send
-    if text.startswith('/send'):
-        await send_post(update, context)
-        return
-
-
-async def preview_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    rec = db_execute("SELECT title, text FROM drafts WHERE user_id=?", (uid,), fetch=True)[0]
-    title, body = rec
-    medias = db_execute("SELECT file_id FROM media WHERE user_id=?", (uid,), fetch=True)
-    buttons = db_execute("SELECT label, url FROM buttons WHERE user_id=?", (uid,), fetch=True)
-
-    # Отправляем медиа
-    media_group = [InputMediaPhoto(f[0]) for f in medias]
-    if media_group:
-        await context.bot.send_media_group(chat_id=uid, media=media_group)
-
-    # Собираем текст
-    txt = f"*{title}*\n{body}" if title else body
-    # Собираем кнопки
-    if buttons:
-        kb = [[InlineKeyboardButton(lbl, url=url)] for lbl, url in buttons]
-        reply_markup = InlineKeyboardMarkup(kb)
-    else:
-        reply_markup = None
-
-    await context.bot.send_message(chat_id=uid, text=txt, parse_mode='Markdown', reply_markup=reply_markup)
-    await context.bot.send_message(chat_id=uid, text="Для отправки в группу используйте /send")
-
-async def send_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    rec = db_execute("SELECT group_id, title, text FROM drafts WHERE user_id=?", (uid,), fetch=True)[0]
-    group_id, title, body = rec
-    medias = db_execute("SELECT file_id FROM media WHERE user_id=?", (uid,), fetch=True)
-    buttons = db_execute("SELECT label, url FROM buttons WHERE user_id=?", (uid,), fetch=True)
-
-    # Отправляем в группу
-    mg = [InputMediaPhoto(f[0]) for f in medias]
-    if mg:
-        await context.bot.send_media_group(chat_id=group_id, media=mg)
-
-    txt = f"*{title}*\n{body}" if title else body
-    if buttons:
-        kb = [[InlineKeyboardButton(lbl, url=url)] for lbl, url in buttons]
-        reply_markup = InlineKeyboardMarkup(kb)
-        await context.bot.send_message(chat_id=group_id, text=txt, parse_mode='Markdown', reply_markup=reply_markup)
-    else:
-        await context.bot.send_message(chat_id=group_id, text=txt, parse_mode='Markdown')
-
-    # Очищаем черновики
-    db_execute("DELETE FROM drafts WHERE user_id=?", (uid,))
-    db_execute("DELETE FROM media WHERE user_id=?", (uid,))
-    db_execute("DELETE FROM buttons WHERE user_id=?", (uid,))
-    await context.bot.send_message(chat_id=uid, text="Пост отправлен!")
-
-async def main():
-    init_db()
+# Запуск
+def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
-    app.add_handler(CommandHandler("preview", preview_post))
-    app.add_handler(CommandHandler("send", send_post))
 
-    # Устанавливаем вебхук
-    await app.bot.set_webhook(WEBHOOK_URL)
-
-    await app.run_webhook(
+    app.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", "5000")),
-        webhook_url=WEBHOOK_URL
+        port=int(os.environ.get("PORT", 5000)),
+        webhook_url=WEBHOOK_URL,
     )
 
-if __name__ == '__main__':
-    asyncio.run(main())
+if __name__ == "__main__":
+    main()
