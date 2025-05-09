@@ -1,42 +1,47 @@
 import os
 import json
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import (
-    Application,
-    CommandHandler,
-    MessageHandler,
-    CallbackQueryHandler,
-    ContextTypes,
-    filters,
+import logging
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup
 )
+from telegram.ext import (
+    Application, CommandHandler, CallbackQueryHandler,
+    MessageHandler, ContextTypes, filters
+)
+import asyncio
 
+# Настройка логов
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Переменные окружения
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = "https://postbot-production.up.railway.app/webhook"
 
+# Файл с состоянием
 DATA_FILE = "data.json"
 
+# Загрузка состояния
 if os.path.exists(DATA_FILE):
     with open(DATA_FILE, "r") as f:
         data = json.load(f)
 else:
     data = {}
 
-def save_data(data):
+def save_data(d):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(d, f)
 
 def get_user_state(user_id):
-    user_id = str(user_id)
-    if user_id not in data:
-        data[user_id] = {"state": "idle"}
-    return data[user_id]
+    if str(user_id) not in data:
+        data[str(user_id)] = {"state": "idle"}
+    return data[str(user_id)]
 
 def reset_user_state(user_id):
     data[str(user_id)] = {"state": "idle"}
     save_data(data)
 
-# --- Handlers ---
-
+# Обработчик /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     state = get_user_state(user_id)
@@ -55,6 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
+# Обработка inline кнопок
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -137,6 +143,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Пост отправлен!")
         reset_user_state(user_id)
 
+# Обработка сообщений
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     state = get_user_state(user_id)
@@ -207,19 +214,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Ошибка. Введите название и thread_id через пробел.")
         return
 
-# --- MAIN ENTRYPOINT ---
-
-def main():
+# Запуск бота
+async def main():
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(button_handler))
     app.add_handler(MessageHandler(filters.TEXT | filters.PHOTO, message_handler))
 
-    app.run_webhook(
+    await app.bot.set_webhook(WEBHOOK_URL)
+    logger.info(f"Webhook установлен: {WEBHOOK_URL}")
+
+    await app.run_webhook(
         listen="0.0.0.0",
         port=int(os.environ.get("PORT", 5000)),
-        webhook_url=WEBHOOK_URL
+        webhook_url=WEBHOOK_URL,
     )
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
