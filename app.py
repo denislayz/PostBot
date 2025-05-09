@@ -68,7 +68,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = query.from_user.id
     st = get_user_state(uid)
 
-    # 1) Начало добавления группы
+    # 1) Начало: добавить группу
     if query.data == "add_group":
         st["state"] = "waiting_for_mention"
         save_data()
@@ -76,17 +76,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Отметьте меня (@), чтобы я запомнил этот чат как группу."
         )
 
-    # 2) Пользователь нажал кнопку группы → подтягиваем темы из стейта
+    # 2) Выбор группы — показываем темы и кнопку «Добавить тему»
     if query.data.startswith("group:"):
         gid = int(query.data.split(":",1)[1])
         st = data[str(uid)] = reset_state_but_keep(uid)
         st["groups"][str(gid)] = st["groups"].get(str(gid), "")
         st["selected_group"] = gid
-        # Строим кнопки тем из st["topics"]
+
+        # Кнопки для уже добавленных тем
         keyboard = []
         for tid, name in st["topics"].items():
             keyboard.append([InlineKeyboardButton(name, callback_data=f"topic:{tid}")])
-        # Добавляем кнопку «Добавить тему» и «Назад»
         keyboard.append([InlineKeyboardButton("🗂 Добавить тему", callback_data="add_topic")])
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back")])
         save_data()
@@ -95,18 +95,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
-    # 3) Добавление темы вручную (по названию и ID)
+    # 3) Запрос ввода темы вручную
     if query.data == "add_topic":
         st["state"] = "waiting_for_topic_entry"
         save_data()
         return await query.edit_message_text(
             "Введите название темы и её thread_id через запятую.\n\n"
-            "Пример:\n"
-            "`Красота и Стиль, 1234567890`",
-            parse_mode="Markdown"
+            "Например:\n"
+            "Красота и Стиль, 1234567890"
         )
 
-    # 4) Выбор темы для создания поста
+    # 4) Пользователь выбрал тему
     if query.data.startswith("topic:"):
         thread_id = query.data.split(":",1)[1]
         st["selected_topic"] = thread_id
@@ -116,13 +115,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "Введите заголовок (или «-» чтобы пропустить):"
         )
 
-    # 5) Назад в меню групп
+    # 5) Назад к меню групп
     if query.data == "back":
         data[str(uid)] = reset_state_but_keep(uid)
         save_data()
         return await start(update, context)
 
-    # 6) Предпросмотр
+    # 6) Предпросмотр поста
     if query.data == "preview":
         p = st.get("post", {})
         text = f"*{p.get('title','')}*\n{p.get('text','')}"
@@ -146,7 +145,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=markup
         )
 
-    # 7) Отправка в выбранную тему
+    # 7) Отправка поста в тему
     if query.data == "send":
         p = st.get("post", {})
         gid = st["selected_group"]
@@ -191,7 +190,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"✅ Группа «{chat.title}» добавлена.")
         return await start(update, context)
 
-    # Ожидание ввода темы вручную
+    # Ввод темы вручную
     if st["state"] == "waiting_for_topic_entry":
         text = update.message.text or ""
         if "," in text:
@@ -203,22 +202,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 st["state"] = "idle"
                 save_data()
                 await update.message.reply_text(f"✅ Тема «{name}» ({tid}) добавлена!")
-                # сразу показать меню тем
-                return await button_handler(
-                    update=Update(
-                        update.update_id,
-                        callback_query=update.callback_query or None
-                    ),  # хитрый коллбек чтобы вызвать button_handler с data="group:<gid>"
-                    context=context
-                )
-        # если неверный формат
+                # Вернуться к выбору группы, чтобы показать темы
+                return await button_handler(update, context)
+        # Неверный формат
         return await update.message.reply_text(
-            "Неверный формат. Введите через запятую:\n"
+            "Неверный формат. Введите:\n"
             "Название темы, thread_id"
         )
 
-    # ========== Создание поста ==========
-    # Заголовок
+    # Создание поста: шаг 1 — заголовок
     if st["state"] == "post_title":
         txt = update.message.text or ""
         if txt != "-":
@@ -227,16 +219,16 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await update.message.reply_text("Введите основной текст (или «-»):")
 
-    # Текст
+    # Шаг 2 — текст
     if st["state"] == "post_text":
         txt = update.message.text or ""
         if txt != "-":
             st["post"]["text"] = txt
         st["state"] = "post_media"
         save_data()
-        return await update.message.reply_text("Прикрепите фото (или отправьте «-»):")
+        return await update.message.reply_text("Прикрепите фото или отправьте «-»:")
 
-    # Медиа
+    # Шаг 3 — медиа
     if st["state"] == "post_media":
         if update.message.photo:
             st["post"]["media"] = update.message.photo[-1].file_id
@@ -244,7 +236,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_data()
         return await update.message.reply_text("Введите кнопки (текст|URL по строкам) или «-»:")
 
-    # Кнопки
+    # Шаг 4 — кнопки
     if st["state"] == "post_buttons":
         txt = update.message.text or ""
         if txt != "-":
